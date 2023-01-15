@@ -10,20 +10,19 @@ import (
 	"strings"
 )
 
-// Tar takes a source and variable writers and walks 'source' writing each file
-// found to the tar writer; the purpose for accepting multiple writers is to allow
-// for multiple outputs (for example a file, or md5 hash)
-func ArchiveDir(src string, writers ...io.Writer) error {
+// currently, archiving does not save dir's tarheaders, and it causes problems when unarchiving. TODO: add dir headers to archive
+func Archive(src string) error {
 
 	// ensure the src actually exists before trying to tar it
 	if _, err := os.Stat(src); err != nil {
-		return fmt.Errorf("Unable to tar files - %v", err.Error())
+		return err
 	}
 
-	tarFile, err := os.Create(fmt.Sprintf("%s.tar", src))
+	tarFile, err := os.Create(fmt.Sprintf("%s.tar.gz", filepath.Base(src)))
 	if err != nil {
 		return err
 	}
+	defer tarFile.Close()
 
 	gzw := gzip.NewWriter(tarFile)
 	defer gzw.Close()
@@ -31,7 +30,6 @@ func ArchiveDir(src string, writers ...io.Writer) error {
 	tw := tar.NewWriter(gzw)
 	defer tw.Close()
 
-	// walk path
 	return filepath.Walk(src, func(file string, fi os.FileInfo, err error) error {
 
 		// return on any error
@@ -75,4 +73,80 @@ func ArchiveDir(src string, writers ...io.Writer) error {
 
 		return nil
 	})
+}
+
+func Unarchive(src string, dst string, ) error {
+	if err := os.MkdirAll(dst, 0755); err != nil {
+		return err
+	}
+
+	r , err:= os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	gzr, err := gzip.NewReader(r)
+	if err != nil {
+		return err
+	}
+	defer gzr.Close()
+
+	tr := tar.NewReader(gzr)
+
+	for {
+		header, err := tr.Next()
+
+		switch {
+
+		// if no more files are found return
+		case err == io.EOF:
+			return nil
+
+		// return any other error
+		case err != nil:
+			return err
+
+		// if the header is nil, just skip it (not sure how this happens)
+		case header == nil:
+			continue
+		}
+
+		// the target location where the dir/file should be created
+		target := filepath.Join(dst, header.Name)
+
+		// Create parent dirs of the file, remove this after fixing archive to include dir headers
+		
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+
+		// check the file type
+		switch header.Typeflag {
+
+		// if its a dir and it doesn't exist create it
+		case tar.TypeDir:
+			if _, err := os.Stat(target); err != nil {
+				if err := os.MkdirAll(target, 0755); err != nil {
+					return err
+				}
+			}
+
+		// if it's a file create it
+		case tar.TypeReg:
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode))
+			if err != nil {
+				return err
+			}
+
+			// copy over contents
+			if _, err := io.Copy(f, tr); err != nil {
+				return err
+			}
+			
+			// manually close here after each file operation; defering would cause each file close
+			// to wait until all operations have completed.
+			f.Close()
+		}
+	}
 }
